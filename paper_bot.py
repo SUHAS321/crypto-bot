@@ -3,60 +3,57 @@ import requests
 import pandas as pd
 import os
 
-# =========================
-# TELEGRAM CONFIG
-# =========================
-TELEGRAM_TOKEN = os.getenv("8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA")
+# TELEGRAM
+TOKEN = os.getenv("8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA")
 CHAT_ID = os.getenv("CHAT_ID")
 
-def send_telegram(msg):
+def send(msg):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        requests.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": msg}
+        )
     except:
         pass
 
 
-# =========================
-# BINANCE SYMBOLS
-# =========================
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
 
 
-# =========================
-# FETCH DATA (BINANCE)
-# =========================
 def get_data(symbol):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=50"
-        data = requests.get(url, timeout=10).json()
+        res = requests.get(url, timeout=10)
 
-        closes = [float(x[4]) for x in data]
+        data = res.json()
+
+        # ✅ FIX ERROR
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+
+        closes = [float(x[4]) for x in data if len(x) > 4]
+
+        if len(closes) < 20:
+            return None
+
         return pd.Series(closes)
 
-    except Exception as e:
-        print("Error:", e)
+    except:
         return None
 
 
-# =========================
-# RSI
-# =========================
-def rsi(data, period=14):
+def rsi(data):
     delta = data.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
 
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 
-# =========================
-# STRATEGY
-# =========================
 def analyze(data):
     price = data.iloc[-1]
     r = rsi(data).iloc[-1]
@@ -72,23 +69,20 @@ def analyze(data):
         return "HOLD", price, r
 
 
-# =========================
-# MAIN LOOP
-# =========================
 print("🚀 BOT STARTED")
-send_telegram("🚀 Trading Bot Started")
+send("🚀 Bot Started")
 
-last_msg = ""
+last = ""
 
 while True:
     try:
         print("\nScanning market...")
 
         best = None
-        best_score = 0
+        score_best = 0
 
-        for symbol in SYMBOLS:
-            data = get_data(symbol)
+        for s in SYMBOLS:
+            data = get_data(s)
 
             if data is None:
                 continue
@@ -97,33 +91,25 @@ while True:
 
             score = abs(r - 50)
 
-            print(f"{symbol} → {signal} | RSI: {r:.2f}")
+            print(s, signal, round(r, 2))
 
-            if signal != "HOLD" and score > best_score:
-                best = (symbol, signal, price, score)
-                best_score = score
+            if signal != "HOLD" and score > score_best:
+                best = (s, signal, price, score)
+                score_best = score
 
         if best:
-            symbol, signal, price, score = best
+            s, signal, price, score = best
 
             sl = price * (0.99 if signal == "BUY" else 1.01)
             tp = price * (1.02 if signal == "BUY" else 0.98)
 
-            msg = (
-                f"🔥 BEST SIGNAL\n\n"
-                f"Coin: {symbol}\n"
-                f"Signal: {signal}\n"
-                f"Price: {price:.2f}\n"
-                f"SL: {sl:.2f}\n"
-                f"TP: {tp:.2f}\n"
-                f"Confidence: {score:.2f}"
-            )
+            msg = f"{s} {signal}\nPrice: {price:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}\nConfidence: {score:.2f}"
 
             print(msg)
 
-            if msg != last_msg:
-                send_telegram(msg)
-                last_msg = msg
+            if msg != last:
+                send(msg)
+                last = msg
 
         time.sleep(10)
 
