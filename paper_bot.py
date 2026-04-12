@@ -1,6 +1,5 @@
 import time
 import requests
-import numpy as np
 import pandas as pd
 import os
 
@@ -14,52 +13,44 @@ def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Telegram error:", e)
+    except:
+        pass
 
 
 # =========================
-# COINS (COINGECKO IDs)
+# COINS (CoinCap IDs)
 # =========================
 SYMBOLS = {
     "bitcoin": "BTC",
     "ethereum": "ETH",
-    "binancecoin": "BNB",
+    "binance-coin": "BNB",
     "solana": "SOL",
     "ripple": "XRP"
 }
 
 
 # =========================
-# FETCH DATA (SAFE VERSION)
+# FETCH DATA (COINCAP)
 # =========================
-def get_data(coin_id):
+def get_price_history(coin_id):
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=1"
-
+        url = f"https://api.coincap.io/v2/assets/{coin_id}/history?interval=m1"
         response = requests.get(url, timeout=10)
-
-        if response.status_code != 200:
-            print(f"API failed for {coin_id}")
-            return None
 
         data = response.json()
 
-        # SAFE CHECK
-        if "prices" not in data:
-            print(f"No price data for {coin_id}")
+        if "data" not in data:
             return None
 
-        prices = [x[1] for x in data["prices"]]
+        prices = [float(x["priceUsd"]) for x in data["data"]]
 
         if len(prices) < 20:
-            print(f"Not enough data for {coin_id}")
             return None
 
         return pd.Series(prices[-50:])
 
     except Exception as e:
-        print(f"Error fetching {coin_id}: {e}")
+        print("Fetch error:", e)
         return None
 
 
@@ -79,7 +70,7 @@ def calculate_rsi(data, period=14):
 
 
 # =========================
-# ANALYSIS (SMART FILTER)
+# ANALYSIS
 # =========================
 def analyze(close):
     price = close.iloc[-1]
@@ -88,16 +79,14 @@ def analyze(close):
     ma_short = close.rolling(5).mean().iloc[-1]
     ma_long = close.rolling(20).mean().iloc[-1]
 
-    trend = (ma_short - ma_long) / price
-
-    if rsi < 40 and ma_short > ma_long and trend > 0:
+    if rsi < 40 and ma_short > ma_long:
         signal = "BUY"
-    elif rsi > 60 and ma_short < ma_long and trend < 0:
+    elif rsi > 60 and ma_short < ma_long:
         signal = "SELL"
     else:
         signal = "HOLD"
 
-    confidence = abs(rsi - 50) + abs(trend * 1000)
+    confidence = abs(rsi - 50)
 
     return signal, confidence, price
 
@@ -105,22 +94,18 @@ def analyze(close):
 # =========================
 # STOP LOSS / TARGET
 # =========================
-def risk_management(signal, price):
+def risk(signal, price):
     if signal == "BUY":
-        sl = price * 0.99
-        tp = price * 1.02
+        return price * 0.99, price * 1.02
     else:
-        sl = price * 1.01
-        tp = price * 0.98
-
-    return round(sl, 2), round(tp, 2)
+        return price * 1.01, price * 0.98
 
 
 # =========================
-# MAIN BOT
+# MAIN LOOP
 # =========================
 print("🚀 BOT STARTED")
-send_telegram("🚀 AI Trading Bot Started")
+send_telegram("🚀 Bot Started")
 
 last_signal = None
 
@@ -128,47 +113,45 @@ while True:
     try:
         print("\nScanning market...")
 
-        best_trade = None
+        best = None
         best_score = 0
 
         for coin_id, symbol in SYMBOLS.items():
-            close = get_data(coin_id)
+            data = get_price_history(coin_id)
 
-            if close is None:
+            if data is None:
                 continue
 
-            signal, confidence, price = analyze(close)
+            signal, score, price = analyze(data)
 
-            print(f"{symbol} → {signal} | Score: {confidence:.2f}")
+            print(f"{symbol} → {signal} | Score {score:.2f}")
 
-            if signal != "HOLD" and confidence > best_score:
-                best_score = confidence
-                best_trade = (symbol, signal, price, confidence)
+            if signal != "HOLD" and score > best_score:
+                best = (symbol, signal, price, score)
+                best_score = score
 
-        if best_trade:
-            symbol, signal, price, confidence = best_trade
-            sl, tp = risk_management(signal, price)
+        if best:
+            symbol, signal, price, score = best
+            sl, tp = risk(signal, price)
 
-            message = (
-                f"🔥 BEST TRADE SIGNAL\n\n"
+            msg = (
+                f"🔥 BEST SIGNAL\n\n"
                 f"Coin: {symbol}\n"
                 f"Signal: {signal}\n"
-                f"Entry: {price:.2f}\n"
-                f"Stop Loss: {sl}\n"
-                f"Target: {tp}\n"
-                f"Confidence: {confidence:.2f}%"
+                f"Price: {price:.2f}\n"
+                f"SL: {sl:.2f}\n"
+                f"TP: {tp:.2f}\n"
+                f"Confidence: {score:.2f}"
             )
 
-            print("\n>>> SIGNAL <<<")
-            print(message)
+            print(msg)
 
-            if last_signal != message:
-                send_telegram(message)
-                last_signal = message
+            if msg != last_signal:
+                send_telegram(msg)
+                last_signal = msg
 
         time.sleep(15)
 
     except Exception as e:
         print("Error:", e)
-        send_telegram(f"❌ Error: {e}")
         time.sleep(15)
