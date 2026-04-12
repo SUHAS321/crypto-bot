@@ -18,46 +18,31 @@ def send_telegram(msg):
 
 
 # =========================
-# COINS (CoinCap IDs)
+# BINANCE SYMBOLS
 # =========================
-SYMBOLS = {
-    "bitcoin": "BTC",
-    "ethereum": "ETH",
-    "binance-coin": "BNB",
-    "solana": "SOL",
-    "ripple": "XRP"
-}
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
 
 
 # =========================
-# FETCH DATA (COINCAP)
+# FETCH DATA (BINANCE)
 # =========================
-def get_price_history(coin_id):
+def get_data(symbol):
     try:
-        url = f"https://api.coincap.io/v2/assets/{coin_id}/history?interval=m1"
-        response = requests.get(url, timeout=10)
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=50"
+        data = requests.get(url, timeout=10).json()
 
-        data = response.json()
-
-        if "data" not in data:
-            return None
-
-        prices = [float(x["priceUsd"]) for x in data["data"]]
-
-        if len(prices) < 20:
-            return None
-
-        return pd.Series(prices[-50:])
+        closes = [float(x[4]) for x in data]
+        return pd.Series(closes)
 
     except Exception as e:
-        print("Fetch error:", e)
+        print("Error:", e)
         return None
 
 
 # =========================
 # RSI
 # =========================
-def calculate_rsi(data, period=14):
+def rsi(data, period=14):
     delta = data.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -70,44 +55,30 @@ def calculate_rsi(data, period=14):
 
 
 # =========================
-# ANALYSIS
+# STRATEGY
 # =========================
-def analyze(close):
-    price = close.iloc[-1]
+def analyze(data):
+    price = data.iloc[-1]
+    r = rsi(data).iloc[-1]
 
-    rsi = calculate_rsi(close).iloc[-1]
-    ma_short = close.rolling(5).mean().iloc[-1]
-    ma_long = close.rolling(20).mean().iloc[-1]
+    ma5 = data.rolling(5).mean().iloc[-1]
+    ma20 = data.rolling(20).mean().iloc[-1]
 
-    if rsi < 40 and ma_short > ma_long:
-        signal = "BUY"
-    elif rsi > 60 and ma_short < ma_long:
-        signal = "SELL"
+    if r < 40 and ma5 > ma20:
+        return "BUY", price, r
+    elif r > 60 and ma5 < ma20:
+        return "SELL", price, r
     else:
-        signal = "HOLD"
-
-    confidence = abs(rsi - 50)
-
-    return signal, confidence, price
-
-
-# =========================
-# STOP LOSS / TARGET
-# =========================
-def risk(signal, price):
-    if signal == "BUY":
-        return price * 0.99, price * 1.02
-    else:
-        return price * 1.01, price * 0.98
+        return "HOLD", price, r
 
 
 # =========================
 # MAIN LOOP
 # =========================
 print("🚀 BOT STARTED")
-send_telegram("🚀 Bot Started")
+send_telegram("🚀 Trading Bot Started")
 
-last_signal = None
+last_msg = ""
 
 while True:
     try:
@@ -116,15 +87,17 @@ while True:
         best = None
         best_score = 0
 
-        for coin_id, symbol in SYMBOLS.items():
-            data = get_price_history(coin_id)
+        for symbol in SYMBOLS:
+            data = get_data(symbol)
 
             if data is None:
                 continue
 
-            signal, score, price = analyze(data)
+            signal, price, r = analyze(data)
 
-            print(f"{symbol} → {signal} | Score {score:.2f}")
+            score = abs(r - 50)
+
+            print(f"{symbol} → {signal} | RSI: {r:.2f}")
 
             if signal != "HOLD" and score > best_score:
                 best = (symbol, signal, price, score)
@@ -132,7 +105,9 @@ while True:
 
         if best:
             symbol, signal, price, score = best
-            sl, tp = risk(signal, price)
+
+            sl = price * (0.99 if signal == "BUY" else 1.01)
+            tp = price * (1.02 if signal == "BUY" else 0.98)
 
             msg = (
                 f"🔥 BEST SIGNAL\n\n"
@@ -146,12 +121,12 @@ while True:
 
             print(msg)
 
-            if msg != last_signal:
+            if msg != last_msg:
                 send_telegram(msg)
-                last_signal = msg
+                last_msg = msg
 
-        time.sleep(15)
+        time.sleep(10)
 
     except Exception as e:
         print("Error:", e)
-        time.sleep(15)
+        time.sleep(10)
