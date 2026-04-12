@@ -5,7 +5,7 @@ import pandas as pd
 import os
 
 # =========================
-# 🔑 TELEGRAM CONFIG
+# TELEGRAM
 # =========================
 TELEGRAM_TOKEN = os.getenv("8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -19,40 +19,35 @@ def send_telegram(msg):
 
 
 # =========================
-# 🪙 COINS
+# COINS (COINGECKO IDs)
 # =========================
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+SYMBOLS = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "binancecoin": "BNB",
+    "solana": "SOL",
+    "ripple": "XRP"
+}
 
 
 # =========================
-# 📊 FETCH DATA (FIXED)
+# GET DATA (COINGECKO)
 # =========================
-def get_data(symbol):
+def get_data(coin_id):
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=50"
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=1&interval=minute"
+        data = requests.get(url, timeout=10).json()
 
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-
-        if response.status_code != 200:
-            print(f"API error for {symbol}")
-            return None
-
-        data = response.json()
-
-        close = [float(x[4]) for x in data]
-        return pd.Series(close)
+        prices = [x[1] for x in data["prices"]]
+        return pd.Series(prices[-50:])
 
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+        print(f"Error fetching {coin_id}: {e}")
         return None
 
 
 # =========================
-# 📈 RSI
+# RSI
 # =========================
 def calculate_rsi(data, period=14):
     delta = data.diff()
@@ -67,7 +62,7 @@ def calculate_rsi(data, period=14):
 
 
 # =========================
-# 🧠 ANALYSIS
+# ANALYSIS
 # =========================
 def analyze(close):
     price = close.iloc[-1]
@@ -91,7 +86,7 @@ def analyze(close):
 
 
 # =========================
-# 💰 RISK MANAGEMENT
+# SL / TP
 # =========================
 def risk_management(signal, price):
     if signal == "BUY":
@@ -105,7 +100,7 @@ def risk_management(signal, price):
 
 
 # =========================
-# 🚀 MAIN BOT
+# MAIN LOOP
 # =========================
 print("🚀 BOT STARTED")
 send_telegram("🚀 AI Trading Bot Started")
@@ -119,8 +114,8 @@ while True:
         best_trade = None
         best_score = 0
 
-        for symbol in SYMBOLS:
-            close = get_data(symbol)
+        for coin_id, symbol in SYMBOLS.items():
+            close = get_data(coin_id)
 
             if close is None:
                 continue
@@ -147,7 +142,6 @@ while True:
                 f"Confidence: {confidence:.2f}%"
             )
 
-            print("\n>>> SIGNAL <<<")
             print(message)
 
             if last_signal != message:
