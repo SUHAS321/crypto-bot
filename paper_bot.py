@@ -5,7 +5,7 @@ import pandas as pd
 import os
 
 # =========================
-# TELEGRAM
+# TELEGRAM CONFIG
 # =========================
 TELEGRAM_TOKEN = os.getenv("8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -31,14 +31,31 @@ SYMBOLS = {
 
 
 # =========================
-# GET DATA (COINGECKO)
+# FETCH DATA (SAFE VERSION)
 # =========================
 def get_data(coin_id):
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=1&interval=minute"
-        data = requests.get(url, timeout=10).json()
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=1"
+
+        response = requests.get(url, timeout=10)
+
+        if response.status_code != 200:
+            print(f"API failed for {coin_id}")
+            return None
+
+        data = response.json()
+
+        # SAFE CHECK
+        if "prices" not in data:
+            print(f"No price data for {coin_id}")
+            return None
 
         prices = [x[1] for x in data["prices"]]
+
+        if len(prices) < 20:
+            print(f"Not enough data for {coin_id}")
+            return None
+
         return pd.Series(prices[-50:])
 
     except Exception as e:
@@ -62,7 +79,7 @@ def calculate_rsi(data, period=14):
 
 
 # =========================
-# ANALYSIS
+# ANALYSIS (SMART FILTER)
 # =========================
 def analyze(close):
     price = close.iloc[-1]
@@ -86,7 +103,7 @@ def analyze(close):
 
 
 # =========================
-# SL / TP
+# STOP LOSS / TARGET
 # =========================
 def risk_management(signal, price):
     if signal == "BUY":
@@ -100,7 +117,7 @@ def risk_management(signal, price):
 
 
 # =========================
-# MAIN LOOP
+# MAIN BOT
 # =========================
 print("🚀 BOT STARTED")
 send_telegram("🚀 AI Trading Bot Started")
@@ -133,7 +150,7 @@ while True:
             sl, tp = risk_management(signal, price)
 
             message = (
-                f"🔥 BEST TRADE\n\n"
+                f"🔥 BEST TRADE SIGNAL\n\n"
                 f"Coin: {symbol}\n"
                 f"Signal: {signal}\n"
                 f"Entry: {price:.2f}\n"
@@ -142,15 +159,16 @@ while True:
                 f"Confidence: {confidence:.2f}%"
             )
 
+            print("\n>>> SIGNAL <<<")
             print(message)
 
             if last_signal != message:
                 send_telegram(message)
                 last_signal = message
 
-        time.sleep(10)
+        time.sleep(15)
 
     except Exception as e:
         print("Error:", e)
         send_telegram(f"❌ Error: {e}")
-        time.sleep(10)
+        time.sleep(15)
