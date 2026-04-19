@@ -4,7 +4,7 @@ import pandas as pd
 from pybit.unified_trading import HTTP
 
 # =========================
-# CONFIG (PUT YOUR KEYS HERE)
+# CONFIG
 # =========================
 BYBIT_API_KEY = "YgoxC6A9aWOAoRvJKb"
 BYBIT_SECRET_KEY = "bZyXL8kuS5uiikGrc4t01nbcAo8pCXcRtUC9"
@@ -12,17 +12,21 @@ BYBIT_SECRET_KEY = "bZyXL8kuS5uiikGrc4t01nbcAo8pCXcRtUC9"
 TELEGRAM_TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMBOLS = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+    "SOLUSDT": "solana"
+}
 
-RISK_PER_TRADE = 0.20   # 20% of balance
-TP_PERCENT = 0.01       # 1% target
-SL_PERCENT = 0.005      # 0.5% stop loss
+RISK = 0.20
+TP = 0.01
+SL = 0.005
 
 # =========================
-# INIT BYBIT SESSION
+# BYBIT SESSION
 # =========================
 session = HTTP(
-    testnet=False,  # 🔥 change to True for demo
+    testnet=False,
     api_key=BYBIT_API_KEY,
     api_secret=BYBIT_SECRET_KEY
 )
@@ -40,46 +44,32 @@ def send(msg):
         print("Telegram error", flush=True)
 
 # =========================
-# GET BALANCE
-# =========================
-def get_balance():
-    try:
-        res = session.get_wallet_balance(accountType="UNIFIED")
-        return float(res["result"]["list"][0]["totalWalletBalance"])
-    except Exception as e:
-        print("Balance error:", e, flush=True)
-        return 0
-
-# =========================
-# GET PRICE
+# PRICE (COINGECKO)
 # =========================
 def get_price(symbol):
     try:
-        res = session.get_tickers(category="linear", symbol=symbol)
-        return float(res["result"]["list"][0]["lastPrice"])
-    except Exception as e:
-        print("Price error:", e, flush=True)
+        coin = SYMBOLS[symbol]
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd"
+        res = requests.get(url).json()
+        return float(res[coin]["usd"])
+    except:
         return None
 
 # =========================
-# GET CANDLES
+# KLINES (COINGECKO)
 # =========================
 def get_klines(symbol):
     try:
-        res = session.get_kline(
-            category="linear",
-            symbol=symbol,
-            interval="1",
-            limit=100
-        )
+        coin = SYMBOLS[symbol]
+        url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart?vs_currency=usd&days=1"
+        res = requests.get(url).json()
 
-        data = res["result"]["list"]
+        prices = res["prices"]
+        closes = [p[1] for p in prices[-100:]]
 
-        closes = [float(x[4]) for x in data]
         return pd.Series(closes)
 
-    except Exception as e:
-        print("Kline error:", e, flush=True)
+    except:
         return None
 
 # =========================
@@ -114,27 +104,36 @@ def analyze(data):
         return "Hold", price
 
 # =========================
-# PLACE ORDER
+# BALANCE
+# =========================
+def get_balance():
+    try:
+        res = session.get_wallet_balance(accountType="UNIFIED")
+        return float(res["result"]["list"][0]["totalWalletBalance"])
+    except:
+        return 0
+
+# =========================
+# ORDER
 # =========================
 def place_trade(symbol, side):
-    balance = get_balance()
     price = get_price(symbol)
+    balance = get_balance()
 
     if price is None or balance == 0:
         return
 
-    amount = balance * RISK_PER_TRADE
-    qty = round(amount / price, 3)
+    qty = round((balance * RISK) / price, 3)
 
     if qty <= 0:
         return
 
     if side == "Buy":
-        tp = price * (1 + TP_PERCENT)
-        sl = price * (1 - SL_PERCENT)
+        tp = price * (1 + TP)
+        sl = price * (1 - SL)
     else:
-        tp = price * (1 - TP_PERCENT)
-        sl = price * (1 + SL_PERCENT)
+        tp = price * (1 - TP)
+        sl = price * (1 + SL)
 
     try:
         session.place_order(
@@ -149,10 +148,9 @@ def place_trade(symbol, side):
 
         send(f"""
 🚀 TRADE EXECUTED
-
 {symbol} {side}
 
-Entry: {price}
+Entry: {price:.2f}
 TP: {tp:.2f}
 SL: {sl:.2f}
 
@@ -167,14 +165,17 @@ Balance: {balance:.2f}
 # =========================
 def main():
     print("BOT STARTED", flush=True)
-    send("🚀 BYBIT BOT STARTED")
+    send("🚀 BOT STARTED")
 
     while True:
         try:
+            print("Running...", flush=True)
+
             for symbol in SYMBOLS:
                 data = get_klines(symbol)
 
                 if data is None:
+                    print(f"No data {symbol}", flush=True)
                     continue
 
                 signal, price = analyze(data)
@@ -184,14 +185,11 @@ def main():
                 if signal != "Hold":
                     place_trade(symbol, signal)
 
-            time.sleep(20)
+            time.sleep(30)
 
         except Exception as e:
-            print("MAIN ERROR:", e, flush=True)
+            print("ERROR:", e, flush=True)
             time.sleep(10)
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     main()
