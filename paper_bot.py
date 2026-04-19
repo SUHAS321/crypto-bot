@@ -1,53 +1,43 @@
 import time
 import requests
 import pandas as pd
-from pybit.unified_trading import HTTP
 
 # =========================
-# CONFIG
+# TELEGRAM CONFIG
 # =========================
-BYBIT_API_KEY = "YgoxC6A9aWOAoRvJKb"
-BYBIT_SECRET_KEY = "bZyXL8kuS5uiikGrc4t01nbcAo8pCXcRtUC9"
-
-TELEGRAM_TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
+TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
 
-
-SYMBOLS = {
-    "BTCUSDT": "bitcoin",
-    "ETHUSDT": "ethereum",
-    "SOLUSDT": "solana"
-}
-
-RISK = 0.20   # 20% balance per trade
-TP = 0.01     # 1% profit
-SL = 0.005    # 0.5% stop loss
-
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-
-# =========================
-# BYBIT SESSION
-# =========================
-session = HTTP(
-    testnet=False,  # ⚠️ change to True for demo first
-    api_key=BYBIT_API_KEY,
-    api_secret=BYBIT_SECRET_KEY
-)
-
-# =========================
-# TELEGRAM
-# =========================
 def send(msg):
     try:
         requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
         print("Telegram error", flush=True)
 
 # =========================
-# DATA (COINGECKO)
+# SETTINGS
+# =========================
+SYMBOLS = {
+    "BTCUSDT": "bitcoin",
+    "ETHUSDT": "ethereum",
+    "SOLUSDT": "solana"
+}
+
+BALANCE = 20.0
+TRADE_PERCENT = 0.3
+
+TP = 0.01
+SL = 0.005
+
+active_trades = {}
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# =========================
+# DATA FUNCTIONS
 # =========================
 def get_price(symbol):
     try:
@@ -90,7 +80,7 @@ def rsi(data):
     return 100 - (100 / (1 + rs))
 
 # =========================
-# STRATEGY (IMPROVED)
+# STRATEGY (UPGRADED)
 # =========================
 def analyze(data):
     try:
@@ -102,112 +92,144 @@ def analyze(data):
 
         r = rsi(data).iloc[-1]
 
-        # TREND BUY
         if ema9 > ema21 > ema50 and r < 55:
-            return "Buy", price
+            return "BUY", price
 
-        # TREND SELL
         elif ema9 < ema21 < ema50 and r > 45:
-            return "Sell", price
+            return "SELL", price
 
-        # SCALP SIGNALS
         elif r < 30:
-            return "Buy", price
+            return "BUY", price
 
         elif r > 70:
-            return "Sell", price
+            return "SELL", price
 
-        return "Hold", price
+        return "HOLD", price
 
     except:
-        return "Hold", None
+        return "HOLD", None
 
 # =========================
-# BALANCE
+# OPEN TRADE
 # =========================
-def get_balance():
-    try:
-        res = session.get_wallet_balance(accountType="UNIFIED")
-        return float(res["result"]["list"][0]["totalWalletBalance"])
-    except:
-        return 0
+def open_trade(symbol):
+    global BALANCE
 
-# =========================
-# ORDER EXECUTION
-# =========================
-def place_trade(symbol, side):
-    price = get_price(symbol)
-    balance = get_balance()
-
-    if price is None or balance == 0:
+    if symbol in active_trades:
         return
 
-    qty = round((balance * RISK) / price, 3)
-
-    if qty <= 0:
+    data = get_klines(symbol)
+    if data is None:
+        print(f"No data {symbol}", flush=True)
         return
 
-    if side == "Buy":
+    signal, price = analyze(data)
+
+    print(f"{symbol} → {signal}", flush=True)
+
+    if signal == "HOLD" or price is None:
+        return
+
+    amount = BALANCE * TRADE_PERCENT
+    qty = amount / price
+
+    if signal == "BUY":
         tp = price * (1 + TP)
         sl = price * (1 - SL)
     else:
         tp = price * (1 - TP)
         sl = price * (1 + SL)
 
-    try:
-        session.place_order(
-            category="linear",
-            symbol=symbol,
-            side=side,
-            orderType="Market",
-            qty=qty,
-            takeProfit=str(round(tp, 2)),
-            stopLoss=str(round(sl, 2))
-        )
+    active_trades[symbol] = {
+        "side": signal,
+        "entry": price,
+        "tp": tp,
+        "sl": sl,
+        "qty": qty
+    }
 
-        send(f"""
-🚀 TRADE EXECUTED
-{symbol} {side}
+    send(f"""
+📊 PAPER TRADE OPEN
+{symbol} {signal}
 
 Entry: {price:.2f}
 TP: {tp:.2f}
 SL: {sl:.2f}
 
-💰 Balance: {balance:.2f}
+💰 Balance: ${BALANCE:.2f}
 """)
 
-    except Exception as e:
-        send(f"Order error: {e}")
+# =========================
+# CLOSE TRADE
+# =========================
+def check_trades():
+    global BALANCE
+
+    to_close = []
+
+    for symbol, trade in active_trades.items():
+        price = get_price(symbol)
+
+        if price is None:
+            continue
+
+        entry = trade["entry"]
+        qty = trade["qty"]
+        side = trade["side"]
+
+        closed = False
+        pnl = 0
+
+        if side == "BUY":
+            if price >= trade["tp"] or price <= trade["sl"]:
+                pnl = (price - entry) * qty
+                closed = True
+
+        elif side == "SELL":
+            if price <= trade["tp"] or price >= trade["sl"]:
+                pnl = (entry - price) * qty
+                closed = True
+
+        if closed:
+            BALANCE += pnl
+            result = "PROFIT" if pnl > 0 else "LOSS"
+
+            send(f"""
+📉 TRADE CLOSED
+{symbol}
+
+Result: {result}
+PnL: ${pnl:.2f}
+
+💰 Balance: ${BALANCE:.2f}
+""")
+
+            print(f"{symbol} CLOSED PnL: {pnl}", flush=True)
+            to_close.append(symbol)
+
+    for s in to_close:
+        del active_trades[s]
 
 # =========================
 # MAIN LOOP
 # =========================
 def main():
     print("BOT STARTED", flush=True)
-    send("🚀 BYBIT BOT STARTED")
+    send("🚀 PAPER TRADING BOT STARTED")
 
     while True:
         try:
             print("Running...", flush=True)
 
             for symbol in SYMBOLS:
-                data = get_klines(symbol)
+                open_trade(symbol)
 
-                if data is None:
-                    print(f"No data {symbol}", flush=True)
-                    continue
+            check_trades()
 
-                signal, price = analyze(data)
-
-                print(f"{symbol} → {signal}", flush=True)
-
-                if signal != "Hold":
-                    place_trade(symbol, signal)
-
-            time.sleep(30)
+            time.sleep(20)
 
         except Exception as e:
-            print("MAIN ERROR:", e, flush=True)
+            print("ERROR:", e, flush=True)
             time.sleep(10)
 
 # =========================
