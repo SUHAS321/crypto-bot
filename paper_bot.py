@@ -1,78 +1,89 @@
 import time
 import requests
 import pandas as pd
+from pybit.unified_trading import HTTP
 
 # =========================
-# TELEGRAM CONFIG
+# CONFIG (PUT YOUR KEYS HERE)
 # =========================
-TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
+BYBIT_API_KEY = "YgoxC6A9aWOAoRvJKb"
+BYBIT_SECRET_KEY = "bZyXL8kuS5uiikGrc4t01nbcAo8pCXcRtUC9"
+
+TELEGRAM_TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
 
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+RISK_PER_TRADE = 0.20   # 20% of balance
+TP_PERCENT = 0.01       # 1% target
+SL_PERCENT = 0.005      # 0.5% stop loss
+
+# =========================
+# INIT BYBIT SESSION
+# =========================
+session = HTTP(
+    testnet=False,  # 🔥 change to True for demo
+    api_key=BYBIT_API_KEY,
+    api_secret=BYBIT_SECRET_KEY
+)
+
+# =========================
+# TELEGRAM
+# =========================
 def send(msg):
     try:
         requests.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
         print("Telegram error", flush=True)
 
 # =========================
-# SETTINGS
+# GET BALANCE
 # =========================
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-
-BALANCE = 20.0
-TRADE_PERCENT = 0.3
-
-TP = 0.01
-SL = 0.005
-
-active_trades = {}
-
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+def get_balance():
+    try:
+        res = session.get_wallet_balance(accountType="UNIFIED")
+        return float(res["result"]["list"][0]["totalWalletBalance"])
+    except Exception as e:
+        print("Balance error:", e, flush=True)
+        return 0
 
 # =========================
-# SAFE DATA FUNCTIONS
+# GET PRICE
 # =========================
 def get_price(symbol):
-    for _ in range(3):
-        try:
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-            res = requests.get(url, headers=HEADERS, timeout=10)
-            data = res.json()
-
-            if "price" in data:
-                return float(data["price"])
-
-        except Exception as e:
-            print(f"Retry price {symbol}", flush=True)
-
-        time.sleep(1)
-
-    return None
-
-
-def get_klines(symbol):
-    for _ in range(3):
-        try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-            res = requests.get(url, headers=HEADERS, timeout=10)
-            data = res.json()
-
-            if isinstance(data, list) and len(data) > 20:
-                closes = [float(x[4]) for x in data if len(x) > 4]
-                return pd.Series(closes)
-
-        except Exception as e:
-            print(f"Retry klines {symbol}", flush=True)
-
-        time.sleep(1)
-
-    return None
+    try:
+        res = session.get_tickers(category="linear", symbol=symbol)
+        return float(res["result"]["list"][0]["lastPrice"])
+    except Exception as e:
+        print("Price error:", e, flush=True)
+        return None
 
 # =========================
-# INDICATORS
+# GET CANDLES
+# =========================
+def get_klines(symbol):
+    try:
+        res = session.get_kline(
+            category="linear",
+            symbol=symbol,
+            interval="1",
+            limit=100
+        )
+
+        data = res["result"]["list"]
+
+        closes = [float(x[4]) for x in data]
+        return pd.Series(closes)
+
+    except Exception as e:
+        print("Kline error:", e, flush=True)
+        return None
+
+# =========================
+# RSI
 # =========================
 def rsi(data):
     delta = data.diff()
@@ -86,147 +97,94 @@ def rsi(data):
     return 100 - (100 / (1 + rs))
 
 # =========================
-# STRATEGY (IMPROVED)
+# STRATEGY
 # =========================
 def analyze(data):
-    try:
-        price = data.iloc[-1]
+    price = data.iloc[-1]
 
-        ema9 = data.ewm(span=9).mean().iloc[-1]
-        ema21 = data.ewm(span=21).mean().iloc[-1]
-        r = rsi(data).iloc[-1]
+    ema9 = data.ewm(span=9).mean().iloc[-1]
+    ema21 = data.ewm(span=21).mean().iloc[-1]
+    r = rsi(data).iloc[-1]
 
-        if ema9 > ema21 and r < 40:
-            return "BUY", price
-
-        elif ema9 < ema21 and r > 60:
-            return "SELL", price
-
-        return "HOLD", price
-
-    except Exception as e:
-        print("Analyze error:", e, flush=True)
-        return "HOLD", None
-
-# =========================
-# OPEN TRADE
-# =========================
-def open_trade(symbol):
-    global BALANCE
-
-    if symbol in active_trades:
-        return
-
-    data = get_klines(symbol)
-    if data is None:
-        print(f"Skip {symbol} (no data)", flush=True)
-        return
-
-    signal, price = analyze(data)
-
-    print(f"{symbol} → {signal}", flush=True)
-
-    if signal == "HOLD" or price is None:
-        return
-
-    amount = BALANCE * TRADE_PERCENT
-    qty = amount / price
-
-    if signal == "BUY":
-        tp = price * (1 + TP)
-        sl = price * (1 - SL)
+    if ema9 > ema21 and r < 40:
+        return "Buy", price
+    elif ema9 < ema21 and r > 60:
+        return "Sell", price
     else:
-        tp = price * (1 - TP)
-        sl = price * (1 + SL)
+        return "Hold", price
 
-    active_trades[symbol] = {
-        "side": signal,
-        "entry": price,
-        "tp": tp,
-        "sl": sl,
-        "qty": qty
-    }
+# =========================
+# PLACE ORDER
+# =========================
+def place_trade(symbol, side):
+    balance = get_balance()
+    price = get_price(symbol)
 
-    send(f"""
-📊 PAPER TRADE OPEN
-{symbol} {signal}
+    if price is None or balance == 0:
+        return
 
-Entry: {price:.2f}
+    amount = balance * RISK_PER_TRADE
+    qty = round(amount / price, 3)
+
+    if qty <= 0:
+        return
+
+    if side == "Buy":
+        tp = price * (1 + TP_PERCENT)
+        sl = price * (1 - SL_PERCENT)
+    else:
+        tp = price * (1 - TP_PERCENT)
+        sl = price * (1 + SL_PERCENT)
+
+    try:
+        session.place_order(
+            category="linear",
+            symbol=symbol,
+            side=side,
+            orderType="Market",
+            qty=qty,
+            takeProfit=str(round(tp, 2)),
+            stopLoss=str(round(sl, 2))
+        )
+
+        send(f"""
+🚀 TRADE EXECUTED
+
+{symbol} {side}
+
+Entry: {price}
 TP: {tp:.2f}
 SL: {sl:.2f}
 
-💰 Balance: ${BALANCE:.2f}
+Balance: {balance:.2f}
 """)
 
-# =========================
-# CLOSE TRADE
-# =========================
-def check_trades():
-    global BALANCE
-
-    to_close = []
-
-    for symbol, trade in active_trades.items():
-        price = get_price(symbol)
-
-        if price is None:
-            continue
-
-        entry = trade["entry"]
-        qty = trade["qty"]
-        side = trade["side"]
-
-        closed = False
-        pnl = 0
-
-        if side == "BUY":
-            if price >= trade["tp"] or price <= trade["sl"]:
-                pnl = (price - entry) * qty
-                closed = True
-
-        elif side == "SELL":
-            if price <= trade["tp"] or price >= trade["sl"]:
-                pnl = (entry - price) * qty
-                closed = True
-
-        if closed:
-            BALANCE += pnl
-            result = "PROFIT" if pnl > 0 else "LOSS"
-
-            send(f"""
-📉 PAPER TRADE CLOSED
-{symbol}
-
-Result: {result}
-PnL: ${pnl:.2f}
-
-💰 New Balance: ${BALANCE:.2f}
-""")
-
-            print(f"{symbol} CLOSED PnL: {pnl}", flush=True)
-
-            to_close.append(symbol)
-
-    for s in to_close:
-        del active_trades[s]
+    except Exception as e:
+        send(f"Order error: {e}")
 
 # =========================
 # MAIN LOOP
 # =========================
 def main():
     print("BOT STARTED", flush=True)
-    send("🚀 PAPER TRADING BOT STARTED")
+    send("🚀 BYBIT BOT STARTED")
 
     while True:
         try:
-            print("Running cycle...", flush=True)
-
             for symbol in SYMBOLS:
-                open_trade(symbol)
+                data = get_klines(symbol)
 
-            check_trades()
+                if data is None:
+                    continue
 
-            time.sleep(15)
+                signal, price = analyze(data)
+
+                print(symbol, signal, flush=True)
+
+                if signal != "Hold":
+                    place_trade(symbol, signal)
+
+            time.sleep(20)
 
         except Exception as e:
             print("MAIN ERROR:", e, flush=True)
