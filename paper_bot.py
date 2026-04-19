@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 
 # =========================
-# TELEGRAM
+# TELEGRAM CONFIG
 # =========================
 TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
@@ -30,47 +30,49 @@ SL = 0.005
 
 active_trades = {}
 
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
 # =========================
-# DATA
+# SAFE DATA FUNCTIONS
 # =========================
 def get_price(symbol):
-    try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        res = requests.get(url, timeout=5).json()
+    for _ in range(3):
+        try:
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            data = res.json()
 
-        if "price" not in res:
-            return None
+            if "price" in data:
+                return float(data["price"])
 
-        return float(res["price"])
-    except Exception as e:
-        print(f"Price error {symbol}: {e}", flush=True)
-        return None
+        except Exception as e:
+            print(f"Retry price {symbol}", flush=True)
+
+        time.sleep(1)
+
+    return None
 
 
 def get_klines(symbol):
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-        data = requests.get(url, timeout=5).json()
+    for _ in range(3):
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
+            res = requests.get(url, headers=HEADERS, timeout=10)
+            data = res.json()
 
-        if not isinstance(data, list):
-            return None
+            if isinstance(data, list) and len(data) > 20:
+                closes = [float(x[4]) for x in data if len(x) > 4]
+                return pd.Series(closes)
 
-        closes = []
-        for x in data:
-            if len(x) > 4:
-                closes.append(float(x[4]))
+        except Exception as e:
+            print(f"Retry klines {symbol}", flush=True)
 
-        if len(closes) < 20:
-            return None
+        time.sleep(1)
 
-        return pd.Series(closes)
-
-    except Exception as e:
-        print(f"Kline error {symbol}: {e}", flush=True)
-        return None
+    return None
 
 # =========================
-# RSI
+# INDICATORS
 # =========================
 def rsi(data):
     delta = data.diff()
@@ -84,7 +86,7 @@ def rsi(data):
     return 100 - (100 / (1 + rs))
 
 # =========================
-# STRATEGY
+# STRATEGY (IMPROVED)
 # =========================
 def analyze(data):
     try:
@@ -117,7 +119,7 @@ def open_trade(symbol):
 
     data = get_klines(symbol)
     if data is None:
-        print(f"No data {symbol}", flush=True)
+        print(f"Skip {symbol} (no data)", flush=True)
         return
 
     signal, price = analyze(data)
@@ -230,5 +232,8 @@ def main():
             print("MAIN ERROR:", e, flush=True)
             time.sleep(10)
 
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
     main()
