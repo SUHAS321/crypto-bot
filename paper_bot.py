@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 
 # =========================
-# TELEGRAM CONFIG
+# TELEGRAM
 # =========================
 TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
@@ -15,7 +15,7 @@ def send(msg):
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
-        pass
+        print("Telegram error", flush=True)
 
 # =========================
 # SETTINGS
@@ -23,15 +23,15 @@ def send(msg):
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 BALANCE = 20.0
-TRADE_PERCENT = 0.3   # 30% per trade
+TRADE_PERCENT = 0.3
 
-TP = 0.01   # 1%
-SL = 0.005  # 0.5%
+TP = 0.01
+SL = 0.005
 
 active_trades = {}
 
 # =========================
-# SAFE DATA FUNCTIONS
+# DATA
 # =========================
 def get_price(symbol):
     try:
@@ -42,7 +42,8 @@ def get_price(symbol):
             return None
 
         return float(res["price"])
-    except:
+    except Exception as e:
+        print(f"Price error {symbol}: {e}", flush=True)
         return None
 
 
@@ -64,15 +65,15 @@ def get_klines(symbol):
 
         return pd.Series(closes)
 
-    except:
+    except Exception as e:
+        print(f"Kline error {symbol}: {e}", flush=True)
         return None
 
 # =========================
-# INDICATORS
+# RSI
 # =========================
 def rsi(data):
     delta = data.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -93,7 +94,6 @@ def analyze(data):
         ema21 = data.ewm(span=21).mean().iloc[-1]
         r = rsi(data).iloc[-1]
 
-        # Better filtered signals
         if ema9 > ema21 and r < 40:
             return "BUY", price
 
@@ -102,7 +102,8 @@ def analyze(data):
 
         return "HOLD", price
 
-    except:
+    except Exception as e:
+        print("Analyze error:", e, flush=True)
         return "HOLD", None
 
 # =========================
@@ -116,9 +117,12 @@ def open_trade(symbol):
 
     data = get_klines(symbol)
     if data is None:
+        print(f"No data {symbol}", flush=True)
         return
 
     signal, price = analyze(data)
+
+    print(f"{symbol} → {signal}", flush=True)
 
     if signal == "HOLD" or price is None:
         return
@@ -197,6 +201,8 @@ PnL: ${pnl:.2f}
 💰 New Balance: ${BALANCE:.2f}
 """)
 
+            print(f"{symbol} CLOSED PnL: {pnl}", flush=True)
+
             to_close.append(symbol)
 
     for s in to_close:
@@ -206,10 +212,13 @@ PnL: ${pnl:.2f}
 # MAIN LOOP
 # =========================
 def main():
+    print("BOT STARTED", flush=True)
     send("🚀 PAPER TRADING BOT STARTED")
 
     while True:
         try:
+            print("Running cycle...", flush=True)
+
             for symbol in SYMBOLS:
                 open_trade(symbol)
 
@@ -218,11 +227,8 @@ def main():
             time.sleep(15)
 
         except Exception as e:
-            print("Error:", e)
+            print("MAIN ERROR:", e, flush=True)
             time.sleep(10)
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     main()
