@@ -22,32 +22,57 @@ def send(msg):
 # =========================
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
-BALANCE = 20
-TRADE_PERCENT = 0.3
+BALANCE = 20.0
+TRADE_PERCENT = 0.3   # 30% per trade
 
-TP = 0.01
-SL = 0.005
+TP = 0.01   # 1%
+SL = 0.005  # 0.5%
 
 active_trades = {}
 
 # =========================
-# DATA
+# SAFE DATA FUNCTIONS
 # =========================
 def get_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    return float(requests.get(url).json()["price"])
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        res = requests.get(url, timeout=5).json()
+
+        if "price" not in res:
+            return None
+
+        return float(res["price"])
+    except:
+        return None
+
 
 def get_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
-    data = requests.get(url).json()
-    closes = [float(x[4]) for x in data]
-    return pd.Series(closes)
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=100"
+        data = requests.get(url, timeout=5).json()
+
+        if not isinstance(data, list):
+            return None
+
+        closes = []
+        for x in data:
+            if len(x) > 4:
+                closes.append(float(x[4]))
+
+        if len(closes) < 20:
+            return None
+
+        return pd.Series(closes)
+
+    except:
+        return None
 
 # =========================
-# RSI
+# INDICATORS
 # =========================
 def rsi(data):
     delta = data.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -61,19 +86,24 @@ def rsi(data):
 # STRATEGY
 # =========================
 def analyze(data):
-    price = data.iloc[-1]
+    try:
+        price = data.iloc[-1]
 
-    ema9 = data.ewm(span=9).mean().iloc[-1]
-    ema21 = data.ewm(span=21).mean().iloc[-1]
-    r = rsi(data).iloc[-1]
+        ema9 = data.ewm(span=9).mean().iloc[-1]
+        ema21 = data.ewm(span=21).mean().iloc[-1]
+        r = rsi(data).iloc[-1]
 
-    if ema9 > ema21 and 35 < r < 45:
-        return "BUY", price
+        # Better filtered signals
+        if ema9 > ema21 and r < 40:
+            return "BUY", price
 
-    elif ema9 < ema21 and 55 < r < 65:
-        return "SELL", price
+        elif ema9 < ema21 and r > 60:
+            return "SELL", price
 
-    return "HOLD", price
+        return "HOLD", price
+
+    except:
+        return "HOLD", None
 
 # =========================
 # OPEN TRADE
@@ -85,9 +115,12 @@ def open_trade(symbol):
         return
 
     data = get_klines(symbol)
+    if data is None:
+        return
+
     signal, price = analyze(data)
 
-    if signal == "HOLD":
+    if signal == "HOLD" or price is None:
         return
 
     amount = BALANCE * TRADE_PERCENT
@@ -130,25 +163,31 @@ def check_trades():
     for symbol, trade in active_trades.items():
         price = get_price(symbol)
 
+        if price is None:
+            continue
+
         entry = trade["entry"]
         qty = trade["qty"]
         side = trade["side"]
 
+        closed = False
+        pnl = 0
+
         if side == "BUY":
             if price >= trade["tp"] or price <= trade["sl"]:
                 pnl = (price - entry) * qty
-            else:
-                continue
-        else:
+                closed = True
+
+        elif side == "SELL":
             if price <= trade["tp"] or price >= trade["sl"]:
                 pnl = (entry - price) * qty
-            else:
-                continue
+                closed = True
 
-        BALANCE += pnl
-        result = "PROFIT" if pnl > 0 else "LOSS"
+        if closed:
+            BALANCE += pnl
+            result = "PROFIT" if pnl > 0 else "LOSS"
 
-        send(f"""
+            send(f"""
 📉 PAPER TRADE CLOSED
 {symbol}
 
@@ -158,7 +197,7 @@ PnL: ${pnl:.2f}
 💰 New Balance: ${BALANCE:.2f}
 """)
 
-        to_close.append(symbol)
+            to_close.append(symbol)
 
     for s in to_close:
         del active_trades[s]
@@ -166,17 +205,24 @@ PnL: ${pnl:.2f}
 # =========================
 # MAIN LOOP
 # =========================
-send("🚀 PAPER TRADING BOT STARTED")
+def main():
+    send("🚀 PAPER TRADING BOT STARTED")
 
-while True:
-    try:
-        for s in SYMBOLS:
-            open_trade(s)
+    while True:
+        try:
+            for symbol in SYMBOLS:
+                open_trade(symbol)
 
-        check_trades()
+            check_trades()
 
-        time.sleep(15)
+            time.sleep(15)
 
-    except Exception as e:
-        print("Error:", e)
-        time.sleep(15)
+        except Exception as e:
+            print("Error:", e)
+            time.sleep(10)
+
+# =========================
+# START
+# =========================
+if __name__ == "__main__":
+    main()
