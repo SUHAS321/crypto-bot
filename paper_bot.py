@@ -9,6 +9,7 @@ TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
 
 
+
 def send(msg):
     try:
         requests.post(
@@ -16,11 +17,11 @@ def send(msg):
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
-        print("Telegram error", flush=True)
+        print("Telegram error")
 
-# =========================
+# =====================
 # SETTINGS
-# =========================
+# =====================
 SYMBOLS = {
     "BTCUSDT": "bitcoin",
     "ETHUSDT": "ethereum",
@@ -28,47 +29,43 @@ SYMBOLS = {
 }
 
 BALANCE = 20.0
-TRADE_PERCENT = 0.3
+RISK = 0.3
 
-TP = 0.01   # 1%
-SL = 0.005  # 0.5%
+TP = 0.015   # 1.5%
+SL = 0.007   # 0.7%
 
 active_trades = {}
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# =========================
+# =====================
 # DATA
-# =========================
-def get_price(symbol):
-    try:
-        coin = SYMBOLS[symbol]
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd"
-        res = requests.get(url, headers=HEADERS).json()
-        return float(res[coin]["usd"])
-    except:
-        return None
-
-
-def get_klines(symbol):
+# =====================
+def get_data(symbol):
     try:
         coin = SYMBOLS[symbol]
         url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart?vs_currency=usd&days=1"
-        res = requests.get(url, headers=HEADERS).json()
+        data = requests.get(url, headers=HEADERS).json()
 
-        prices = res.get("prices", [])
-        if len(prices) < 50:
-            return None
+        prices = data["prices"]
+        closes = [p[1] for p in prices[-120:]]
 
-        closes = [p[1] for p in prices[-100:]]
         return pd.Series(closes)
 
     except:
         return None
 
-# =========================
+def get_price(symbol):
+    try:
+        coin = SYMBOLS[symbol]
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd"
+        return float(requests.get(url).json()[coin]["usd"])
+    except:
+        return None
+
+# =====================
 # INDICATORS
-# =========================
+# =====================
 def rsi(data):
     delta = data.diff()
     gain = delta.clip(lower=0)
@@ -80,54 +77,47 @@ def rsi(data):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# =========================
-# STRATEGY
-# =========================
-def analyze(data):
+# =====================
+# STRATEGY (UPGRADED)
+# =====================
+def strategy(data):
     price = data.iloc[-1]
 
-    ema9 = data.ewm(span=9).mean().iloc[-1]
-    ema21 = data.ewm(span=21).mean().iloc[-1]
-    ema50 = data.ewm(span=50).mean().iloc[-1]
+    ema9 = data.ewm(span=9).mean()
+    ema21 = data.ewm(span=21).mean()
 
-    r = rsi(data).iloc[-1]
+    r = rsi(data)
 
-    if ema9 > ema21 > ema50 and r < 55:
+    # CROSSOVER CONFIRMATION
+    if ema9.iloc[-2] < ema21.iloc[-2] and ema9.iloc[-1] > ema21.iloc[-1] and r.iloc[-1] < 60:
         return "BUY", price
 
-    elif ema9 < ema21 < ema50 and r > 45:
-        return "SELL", price
-
-    elif r < 30:
-        return "BUY", price
-
-    elif r > 70:
+    if ema9.iloc[-2] > ema21.iloc[-2] and ema9.iloc[-1] < ema21.iloc[-1] and r.iloc[-1] > 40:
         return "SELL", price
 
     return "HOLD", price
 
-# =========================
+# =====================
 # OPEN TRADE
-# =========================
+# =====================
 def open_trade(symbol):
     global BALANCE
 
     if symbol in active_trades:
         return
 
-    data = get_klines(symbol)
+    data = get_data(symbol)
     if data is None:
-        print(f"No data {symbol}", flush=True)
         return
 
-    signal, price = analyze(data)
+    signal, price = strategy(data)
 
-    print(f"{symbol} → {signal}", flush=True)
+    print(f"{symbol} → {signal}")
 
     if signal == "HOLD":
         return
 
-    amount = BALANCE * TRADE_PERCENT
+    amount = BALANCE * RISK
     qty = amount / price
 
     if signal == "BUY":
@@ -148,8 +138,7 @@ def open_trade(symbol):
     send(f"""
 📊 TRADE OPEN
 
-Symbol: {symbol}
-Side: {signal}
+{symbol} {signal}
 
 Entry: {price:.2f}
 TP: {tp:.2f}
@@ -158,86 +147,76 @@ SL: {sl:.2f}
 💰 Balance: ${BALANCE:.2f}
 """)
 
-# =========================
-# CLOSE TRADE (UPDATED)
-# =========================
+# =====================
+# CLOSE TRADE
+# =====================
 def check_trades():
     global BALANCE
 
     to_close = []
 
-    for symbol, trade in active_trades.items():
+    for symbol, t in active_trades.items():
         price = get_price(symbol)
-
         if price is None:
             continue
 
-        entry = trade["entry"]
-        qty = trade["qty"]
-        side = trade["side"]
+        entry = t["entry"]
+        qty = t["qty"]
 
         pnl = 0
         closed = False
 
-        if side == "BUY":
-            if price >= trade["tp"] or price <= trade["sl"]:
+        if t["side"] == "BUY":
+            if price >= t["tp"] or price <= t["sl"]:
                 pnl = (price - entry) * qty
                 closed = True
 
-        elif side == "SELL":
-            if price <= trade["tp"] or price >= trade["sl"]:
+        else:
+            if price <= t["tp"] or price >= t["sl"]:
                 pnl = (entry - price) * qty
                 closed = True
 
         if closed:
             BALANCE += pnl
 
-            result = "PROFIT ✅" if pnl > 0 else "LOSS ❌"
-
             send(f"""
 📉 TRADE CLOSED
 
-Symbol: {symbol}
-Side: {side}
+{symbol} {t['side']}
 
 Entry: {entry:.2f}
 Exit: {price:.2f}
 
-PnL: ${pnl:.2f} ({result})
-
-💰 Updated Balance: ${BALANCE:.2f}
+PnL: ${pnl:.2f}
+💰 Balance: ${BALANCE:.2f}
 """)
 
-            print(f"{symbol} CLOSED PnL: {pnl}", flush=True)
             to_close.append(symbol)
 
     for s in to_close:
         del active_trades[s]
 
-# =========================
-# MAIN LOOP
-# =========================
+# =====================
+# MAIN
+# =====================
 def main():
-    print("BOT STARTED", flush=True)
-    send("🚀 BOT STARTED (Paper Trading)")
+    send("🚀 BOT STARTED (SMART MODE)")
 
     while True:
         try:
-            print("Running...", flush=True)
+            print("Running...")
 
-            for symbol in SYMBOLS:
-                open_trade(symbol)
+            for s in SYMBOLS:
+                open_trade(s)
 
             check_trades()
 
-            time.sleep(20)
+            time.sleep(30)
 
         except Exception as e:
-            print("ERROR:", e, flush=True)
+            print("Error:", e)
             time.sleep(10)
 
-# =========================
-# START
-# =========================
 if __name__ == "__main__":
     main()
+
