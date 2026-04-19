@@ -8,6 +8,7 @@ import pandas as pd
 TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
 
+
 def send(msg):
     try:
         requests.post(
@@ -29,21 +30,21 @@ SYMBOLS = {
 BALANCE = 20.0
 TRADE_PERCENT = 0.3
 
-TP = 0.01
-SL = 0.005
+TP = 0.01   # 1%
+SL = 0.005  # 0.5%
 
 active_trades = {}
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # =========================
-# DATA FUNCTIONS
+# DATA
 # =========================
 def get_price(symbol):
     try:
         coin = SYMBOLS[symbol]
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd"
-        res = requests.get(url, headers=HEADERS, timeout=10).json()
+        res = requests.get(url, headers=HEADERS).json()
         return float(res[coin]["usd"])
     except:
         return None
@@ -53,7 +54,7 @@ def get_klines(symbol):
     try:
         coin = SYMBOLS[symbol]
         url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart?vs_currency=usd&days=1"
-        res = requests.get(url, headers=HEADERS, timeout=10).json()
+        res = requests.get(url, headers=HEADERS).json()
 
         prices = res.get("prices", [])
         if len(prices) < 50:
@@ -80,34 +81,30 @@ def rsi(data):
     return 100 - (100 / (1 + rs))
 
 # =========================
-# STRATEGY (UPGRADED)
+# STRATEGY
 # =========================
 def analyze(data):
-    try:
-        price = data.iloc[-1]
+    price = data.iloc[-1]
 
-        ema9 = data.ewm(span=9).mean().iloc[-1]
-        ema21 = data.ewm(span=21).mean().iloc[-1]
-        ema50 = data.ewm(span=50).mean().iloc[-1]
+    ema9 = data.ewm(span=9).mean().iloc[-1]
+    ema21 = data.ewm(span=21).mean().iloc[-1]
+    ema50 = data.ewm(span=50).mean().iloc[-1]
 
-        r = rsi(data).iloc[-1]
+    r = rsi(data).iloc[-1]
 
-        if ema9 > ema21 > ema50 and r < 55:
-            return "BUY", price
+    if ema9 > ema21 > ema50 and r < 55:
+        return "BUY", price
 
-        elif ema9 < ema21 < ema50 and r > 45:
-            return "SELL", price
+    elif ema9 < ema21 < ema50 and r > 45:
+        return "SELL", price
 
-        elif r < 30:
-            return "BUY", price
+    elif r < 30:
+        return "BUY", price
 
-        elif r > 70:
-            return "SELL", price
+    elif r > 70:
+        return "SELL", price
 
-        return "HOLD", price
-
-    except:
-        return "HOLD", None
+    return "HOLD", price
 
 # =========================
 # OPEN TRADE
@@ -127,7 +124,7 @@ def open_trade(symbol):
 
     print(f"{symbol} → {signal}", flush=True)
 
-    if signal == "HOLD" or price is None:
+    if signal == "HOLD":
         return
 
     amount = BALANCE * TRADE_PERCENT
@@ -149,8 +146,10 @@ def open_trade(symbol):
     }
 
     send(f"""
-📊 PAPER TRADE OPEN
-{symbol} {signal}
+📊 TRADE OPEN
+
+Symbol: {symbol}
+Side: {signal}
 
 Entry: {price:.2f}
 TP: {tp:.2f}
@@ -160,7 +159,7 @@ SL: {sl:.2f}
 """)
 
 # =========================
-# CLOSE TRADE
+# CLOSE TRADE (UPDATED)
 # =========================
 def check_trades():
     global BALANCE
@@ -177,8 +176,8 @@ def check_trades():
         qty = trade["qty"]
         side = trade["side"]
 
-        closed = False
         pnl = 0
+        closed = False
 
         if side == "BUY":
             if price >= trade["tp"] or price <= trade["sl"]:
@@ -192,16 +191,21 @@ def check_trades():
 
         if closed:
             BALANCE += pnl
-            result = "PROFIT" if pnl > 0 else "LOSS"
+
+            result = "PROFIT ✅" if pnl > 0 else "LOSS ❌"
 
             send(f"""
 📉 TRADE CLOSED
-{symbol}
 
-Result: {result}
-PnL: ${pnl:.2f}
+Symbol: {symbol}
+Side: {side}
 
-💰 Balance: ${BALANCE:.2f}
+Entry: {entry:.2f}
+Exit: {price:.2f}
+
+PnL: ${pnl:.2f} ({result})
+
+💰 Updated Balance: ${BALANCE:.2f}
 """)
 
             print(f"{symbol} CLOSED PnL: {pnl}", flush=True)
@@ -215,7 +219,7 @@ PnL: ${pnl:.2f}
 # =========================
 def main():
     print("BOT STARTED", flush=True)
-    send("🚀 PAPER TRADING BOT STARTED")
+    send("🚀 BOT STARTED (Paper Trading)")
 
     while True:
         try:
