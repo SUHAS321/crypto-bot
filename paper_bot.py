@@ -8,8 +8,6 @@ import pandas as pd
 TOKEN = "8725264690:AAE6xjCAyXyc2qsTRMk9eeuy6_cWXOy8uFA"
 CHAT_ID = "1345617133"
 
-
-
 def send(msg):
     try:
         requests.post(
@@ -17,11 +15,8 @@ def send(msg):
             data={"chat_id": CHAT_ID, "text": msg}
         )
     except:
-        print("Telegram error")
+        pass
 
-# =====================
-# SETTINGS
-# =====================
 SYMBOLS = {
     "BTCUSDT": "bitcoin",
     "ETHUSDT": "ethereum",
@@ -31,26 +26,30 @@ SYMBOLS = {
 BALANCE = 20.0
 RISK = 0.3
 
-TP = 0.015   # 1.5%
-SL = 0.007   # 0.7%
+TP = 0.02
+SL = 0.008
+TRAIL = 0.01
 
 active_trades = {}
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# =====================
-# DATA
-# =====================
+# ================= DATA =================
 def get_data(symbol):
     try:
         coin = SYMBOLS[symbol]
         url = f"https://api.coingecko.com/api/v3/coins/{coin}/market_chart?vs_currency=usd&days=1"
         data = requests.get(url, headers=HEADERS).json()
 
-        prices = data["prices"]
-        closes = [p[1] for p in prices[-120:]]
+        prices = [p[1] for p in data["prices"][-120:]]
+        volumes = [v[1] for v in data["total_volumes"][-120:]]
 
-        return pd.Series(closes)
+        df = pd.DataFrame({
+            "close": prices,
+            "volume": volumes
+        })
+
+        return df
 
     except:
         return None
@@ -63,11 +62,9 @@ def get_price(symbol):
     except:
         return None
 
-# =====================
-# INDICATORS
-# =====================
-def rsi(data):
-    delta = data.diff()
+# ================= INDICATORS =================
+def rsi(series):
+    delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -77,42 +74,62 @@ def rsi(data):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# =====================
-# STRATEGY (UPGRADED)
-# =====================
-def strategy(data):
-    price = data.iloc[-1]
+# ================= AI-LIKE SCORE =================
+def ai_score(df):
+    close = df["close"]
 
-    ema9 = data.ewm(span=9).mean()
-    ema21 = data.ewm(span=21).mean()
+    ema9 = close.ewm(span=9).mean()
+    ema21 = close.ewm(span=21).mean()
 
-    r = rsi(data)
+    r = rsi(close)
 
-    # CROSSOVER CONFIRMATION
-    if ema9.iloc[-2] < ema21.iloc[-2] and ema9.iloc[-1] > ema21.iloc[-1] and r.iloc[-1] < 60:
-        return "BUY", price
+    score = 0
 
-    if ema9.iloc[-2] > ema21.iloc[-2] and ema9.iloc[-1] < ema21.iloc[-1] and r.iloc[-1] > 40:
-        return "SELL", price
+    if ema9.iloc[-1] > ema21.iloc[-1]:
+        score += 1
+
+    if r.iloc[-1] < 60:
+        score += 1
+
+    if df["volume"].iloc[-1] > df["volume"].rolling(20).mean().iloc[-1]:
+        score += 1
+
+    return score
+
+# ================= STRATEGY =================
+def strategy(df):
+    close = df["close"]
+    price = close.iloc[-1]
+
+    ema9 = close.ewm(span=9).mean()
+    ema21 = close.ewm(span=21).mean()
+
+    score = ai_score(df)
+
+    # only trade if strong score
+    if score >= 3:
+        if ema9.iloc[-2] < ema21.iloc[-2] and ema9.iloc[-1] > ema21.iloc[-1]:
+            return "BUY", price
+
+        if ema9.iloc[-2] > ema21.iloc[-2] and ema9.iloc[-1] < ema21.iloc[-1]:
+            return "SELL", price
 
     return "HOLD", price
 
-# =====================
-# OPEN TRADE
-# =====================
+# ================= OPEN =================
 def open_trade(symbol):
     global BALANCE
 
     if symbol in active_trades:
         return
 
-    data = get_data(symbol)
-    if data is None:
+    df = get_data(symbol)
+    if df is None:
         return
 
-    signal, price = strategy(data)
+    signal, price = strategy(df)
 
-    print(f"{symbol} → {signal}")
+    print(symbol, signal)
 
     if signal == "HOLD":
         return
@@ -132,11 +149,12 @@ def open_trade(symbol):
         "entry": price,
         "tp": tp,
         "sl": sl,
-        "qty": qty
+        "qty": qty,
+        "trail_price": price
     }
 
     send(f"""
-📊 TRADE OPEN
+🚀 TRADE OPEN
 
 {symbol} {signal}
 
@@ -144,68 +162,73 @@ Entry: {price:.2f}
 TP: {tp:.2f}
 SL: {sl:.2f}
 
-💰 Balance: ${BALANCE:.2f}
+Balance: ${BALANCE:.2f}
 """)
 
-# =====================
-# CLOSE TRADE
-# =====================
+# ================= CLOSE =================
 def check_trades():
     global BALANCE
 
-    to_close = []
-
-    for symbol, t in active_trades.items():
+    for symbol in list(active_trades.keys()):
+        t = active_trades[symbol]
         price = get_price(symbol)
+
         if price is None:
             continue
 
         entry = t["entry"]
         qty = t["qty"]
 
-        pnl = 0
-        closed = False
+        # TRAILING STOP
+        if t["side"] == "BUY":
+            if price > t["trail_price"]:
+                t["trail_price"] = price
 
+            if price < t["trail_price"] * (1 - TRAIL):
+                pnl = (price - entry) * qty
+                close_trade(symbol, price, pnl)
+                continue
+
+        # TP/SL
         if t["side"] == "BUY":
             if price >= t["tp"] or price <= t["sl"]:
                 pnl = (price - entry) * qty
-                closed = True
+                close_trade(symbol, price, pnl)
 
         else:
             if price <= t["tp"] or price >= t["sl"]:
                 pnl = (entry - price) * qty
-                closed = True
+                close_trade(symbol, price, pnl)
 
-        if closed:
-            BALANCE += pnl
+def close_trade(symbol, price, pnl):
+    global BALANCE
 
-            send(f"""
+    t = active_trades[symbol]
+    BALANCE += pnl
+
+    result = "PROFIT ✅" if pnl > 0 else "LOSS ❌"
+
+    send(f"""
 📉 TRADE CLOSED
 
 {symbol} {t['side']}
 
-Entry: {entry:.2f}
+Entry: {t['entry']:.2f}
 Exit: {price:.2f}
 
-PnL: ${pnl:.2f}
+PnL: ${pnl:.2f} ({result})
+
 💰 Balance: ${BALANCE:.2f}
 """)
 
-            to_close.append(symbol)
+    del active_trades[symbol]
 
-    for s in to_close:
-        del active_trades[s]
-
-# =====================
-# MAIN
-# =====================
+# ================= MAIN =================
 def main():
-    send("🚀 BOT STARTED (SMART MODE)")
+    send("🔥 AI SMART BOT STARTED")
 
     while True:
         try:
-            print("Running...")
-
             for s in SYMBOLS:
                 open_trade(s)
 
@@ -219,4 +242,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
